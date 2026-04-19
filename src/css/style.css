@@ -1,0 +1,378 @@
+/* ======================================================================
+   Artemis 2 Simulator — UI Styles
+   Dark glassmorphism theme, monospace labels
+   ====================================================================== */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --glass-bg:      rgba(10, 12, 20, 0.82);
+  --glass-border:  rgba(80, 140, 255, 0.18);
+  --glass-blur:    16px;
+  --accent:        #4d9fff;
+  --accent-warm:   #ff7d3b;
+  --text-primary:  #e8edf5;
+  --text-muted:    #7a92b0;
+  --panel-width:   280px;
+  --radius:        10px;
+  --font-mono:     "SF Mono", "Fira Code", "Consolas", monospace;
+  --font-ui:       -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+}
+
+/* ── Canvas ──────────────────────────────────────────────────────────── */
+#canvas-container {
+  position: absolute;
+  inset: 0;
+}
+
+#canvas-container canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* ── CSS2D label layer ───────────────────────────────────────────────── */
+#label-renderer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.object-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  color: #fff;
+  background: rgba(0,0,0,0.55);
+  border: 1px solid rgba(255,255,255,0.18);
+  border-radius: 4px;
+  padding: 2px 7px;
+  white-space: nowrap;
+  pointer-events: none;
+  text-shadow: 0 0 8px currentColor;
+  transform: translateX(-50%) translateY(-140%);
+}
+
+.object-label.label-earth   { color: #6ec6ff; border-color: rgba(110,198,255,0.35); }
+.object-label.label-moon    { color: #c8d8e8; border-color: rgba(200,216,232,0.25); }
+.object-label.label-artemis { color: #ffb04d; border-color: rgba(255,176,77,0.35); }
+
+/* ── Right panel ─────────────────────────────────────────────────────── */
+#panel {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: var(--panel-width);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  z-index: 100;
+  user-select: none;
+}
+
+.panel-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.panel-section-title {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--glass-border);
+  padding-bottom: 5px;
+}
+
+/* ── Time display ────────────────────────────────────────────────────── */
+#time-display {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--accent);
+  text-align: center;
+  letter-spacing: 0.04em;
+}
+
+#mission-day {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+#mission-phase {
+  font-size: 10px;
+  color: var(--accent-warm);
+  text-align: center;
+  font-weight: 600;
+  min-height: 14px;
+}
+
+/* ── Scrubber ────────────────────────────────────────────────────────── */
+.scrubber-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 1;
+  height: 4px;
+  background: rgba(80, 140, 255, 0.25);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  background: var(--accent);
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: 0 0 6px rgba(77, 159, 255, 0.6);
+}
+
+input[type="range"]::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+}
+
+/* ── Buttons ─────────────────────────────────────────────────────────── */
+.btn-row {
+  display: flex;
+  gap: 6px;
+}
+
+button {
+  cursor: pointer;
+  border: 1px solid var(--glass-border);
+  background: rgba(255,255,255,0.05);
+  color: var(--text-primary);
+  border-radius: 6px;
+  font-size: 12px;
+  padding: 5px 10px;
+  transition: background 0.15s, border-color 0.15s;
+  font-family: var(--font-ui);
+}
+
+button:hover {
+  background: rgba(77, 159, 255, 0.18);
+  border-color: var(--accent);
+}
+
+button.active {
+  background: rgba(77, 159, 255, 0.28);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+#btn-play {
+  flex: 1;
+  font-size: 16px;
+  padding: 6px;
+}
+
+#btn-reset {
+  font-size: 11px;
+  padding: 5px 8px;
+  color: var(--text-muted);
+}
+
+/* ── Speed selector ──────────────────────────────────────────────────── */
+.speed-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+}
+
+.speed-btn {
+  font-size: 10px;
+  padding: 4px 2px;
+  text-align: center;
+}
+
+.speed-btn.active {
+  background: rgba(77, 159, 255, 0.28);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ── Step buttons ────────────────────────────────────────────────────── */
+#btn-back, #btn-forward {
+  font-size: 14px;
+}
+
+/* ── View / Camera ───────────────────────────────────────────────────── */
+.camera-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+}
+
+.cam-btn {
+  font-size: 10px;
+  padding: 5px 4px;
+  text-align: center;
+}
+
+/* ── Toggles ─────────────────────────────────────────────────────────── */
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-primary);
+}
+
+.toggle-switch {
+  position: relative;
+  width: 32px;
+  height: 18px;
+}
+
+.toggle-switch input { opacity: 0; width: 0; height: 0; }
+
+.toggle-slider {
+  position: absolute;
+  inset: 0;
+  background: rgba(255,255,255,0.1);
+  border-radius: 18px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.toggle-slider::before {
+  content: "";
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  left: 3px;
+  top: 3px;
+  background: #fff;
+  border-radius: 50%;
+  transition: transform 0.2s;
+}
+
+.toggle-switch input:checked + .toggle-slider {
+  background: var(--accent);
+}
+
+.toggle-switch input:checked + .toggle-slider::before {
+  transform: translateX(14px);
+}
+
+/* ── Trail controls ──────────────────────────────────────────────────── */
+.trail-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.trail-row span {
+  color: var(--text-muted);
+  min-width: 50px;
+  text-align: right;
+}
+
+/* ── Loading overlay ─────────────────────────────────────────────────── */
+#loading {
+  position: absolute;
+  inset: 0;
+  background: #000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  z-index: 999;
+  transition: opacity 0.5s;
+}
+
+#loading.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.loading-title {
+  font-family: var(--font-mono);
+  font-size: 20px;
+  color: var(--accent);
+  letter-spacing: 0.15em;
+}
+
+.loading-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.loading-bar-bg {
+  width: 240px;
+  height: 3px;
+  background: rgba(80, 140, 255, 0.15);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.loading-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  animation: load-pulse 1.4s ease-in-out infinite;
+  width: 40%;
+}
+
+@keyframes load-pulse {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(350%); }
+}
+
+/* ── Top-left info badge ─────────────────────────────────────────────── */
+#info-badge {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  z-index: 100;
+  line-height: 1.8;
+}
+
+/* ── Scrollbar for overflow ──────────────────────────────────────────── */
+#panel::-webkit-scrollbar { width: 4px; }
+#panel::-webkit-scrollbar-track { background: transparent; }
+#panel::-webkit-scrollbar-thumb { background: var(--glass-border); border-radius: 2px; }

@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Artemis 2 — 3D Space Simulator</title>
+  <meta name="description" content="Interactive 3D simulator of the NASA Artemis 2 mission" />
+  <link rel="stylesheet" href="src/css/style.css" />
+</head>
+<body>
+
+  <!-- Loading overlay -->
+  <div id="loading">
+    <div class="loading-title">ARTEMIS II</div>
+    <div class="loading-sub">Loading mission data…</div>
+    <div class="loading-bar-bg"><div class="loading-bar-fill"></div></div>
+  </div>
+
+  <!-- Three.js canvas lives here -->
+  <div id="canvas-container"></div>
+
+  <!-- CSS2D label overlay (managed by Three.js CSS2DRenderer) -->
+  <div id="label-renderer"></div>
+
+  <!-- Top-left info -->
+  <div id="info-badge">
+    🖱 Orbit: left-drag &nbsp;|&nbsp; Pan: right-drag &nbsp;|&nbsp; Zoom: scroll<br>
+    ⌨ Space: play/pause &nbsp;|&nbsp; ←/→: step 1 min
+  </div>
+
+  <!-- Right control panel -->
+  <div id="panel">
+
+    <!-- ── Time ── -->
+    <div class="panel-section">
+      <div class="panel-section-title">Mission Time</div>
+      <div id="time-display">2024-11-16 06:00 UTC</div>
+      <div id="mission-day">Mission Day 0 — T+00:00</div>
+      <div id="mission-phase">LEO Parking Orbit</div>
+
+      <!-- Scrubber -->
+      <div class="scrubber-row">
+        <span style="font-size:9px;color:var(--text-muted)">L</span>
+        <input type="range" id="scrubber" min="0" max="14400" value="0" step="1" />
+        <span style="font-size:9px;color:var(--text-muted)">R</span>
+      </div>
+
+      <!-- Play controls -->
+      <div class="btn-row">
+        <button id="btn-back" title="Step back 1 minute">◀</button>
+        <button id="btn-play" title="Play / Pause (Space)">▶</button>
+        <button id="btn-forward" title="Step forward 1 minute">▶</button>
+        <button id="btn-reset" title="Reset to mission start">↺</button>
+      </div>
+    </div>
+
+    <!-- ── Speed ── -->
+    <div class="panel-section">
+      <div class="panel-section-title">Time Speed</div>
+      <div class="speed-grid">
+        <button class="speed-btn active" data-speed="1">1×</button>
+        <button class="speed-btn" data-speed="2">2×</button>
+        <button class="speed-btn" data-speed="5">5×</button>
+        <button class="speed-btn" data-speed="10">10×</button>
+        <button class="speed-btn" data-speed="30">30×</button>
+        <button class="speed-btn" data-speed="50">50×</button>
+        <button class="speed-btn" data-speed="100">100×</button>
+        <button class="speed-btn" data-speed="-1">◀1×</button>
+      </div>
+    </div>
+
+    <!-- ── Camera ── -->
+    <div class="panel-section">
+      <div class="panel-section-title">Camera</div>
+      <div class="camera-grid">
+        <button class="cam-btn active" data-cam="overview">Overview</button>
+        <button class="cam-btn" data-cam="artemis">Follow Artemis</button>
+        <button class="cam-btn" data-cam="earth">From Earth</button>
+        <button class="cam-btn" data-cam="moon">From Moon</button>
+      </div>
+    </div>
+
+    <!-- ── View options ── -->
+    <div class="panel-section">
+      <div class="panel-section-title">View</div>
+
+      <div class="toggle-row">
+        <span>Show Labels</span>
+        <label class="toggle-switch">
+          <input type="checkbox" id="toggle-labels" checked />
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+
+      <div class="toggle-row">
+        <span>Trail Mode</span>
+        <label class="toggle-switch">
+          <input type="checkbox" id="toggle-trails" />
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+
+      <div class="toggle-row">
+        <span>Earth Atmosphere</span>
+        <label class="toggle-switch">
+          <input type="checkbox" id="toggle-atmosphere" checked />
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+
+      <div class="toggle-row">
+        <span>Orbit Paths</span>
+        <label class="toggle-switch">
+          <input type="checkbox" id="toggle-orbits" checked />
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+    </div>
+
+    <!-- ── Trail settings ── -->
+    <div class="panel-section" id="trail-settings" style="opacity:0.4;pointer-events:none;">
+      <div class="panel-section-title">Trail Length</div>
+
+      <div class="trail-row">
+        <span>Artemis</span>
+        <input type="range" id="trail-artemis" min="1" max="14400" value="1440" step="10" />
+        <span id="trail-artemis-val">24 h</span>
+      </div>
+
+      <div class="trail-row">
+        <span>Moon</span>
+        <input type="range" id="trail-moon" min="1" max="14400" value="720" step="10" />
+        <span id="trail-moon-val">12 h</span>
+      </div>
+    </div>
+
+  </div><!-- /panel -->
+
+  <!-- ES module entry point -->
+  <script type="module" src="src/js/main.js"></script>
+
+</body>
+</html>
