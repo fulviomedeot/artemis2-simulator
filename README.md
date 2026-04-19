@@ -63,9 +63,22 @@ scripts/
   generate_trajectory.py    ← Trajectory data generator
 ```
 
+## Data Sources & Accuracy
+
+| Object | Source | Accuracy |
+|--------|--------|---------|
+| **Moon position** | NASA JPL Horizons real ephemeris (body 301) | Sub-km (real data) |
+| **Artemis 2 trajectory** | Parametric model | Educational approximation |
+
+**Moon positions** are fetched directly from NASA JPL Horizons and are accurate to the sub-kilometre level for the April 2026 mission window.
+
+**Artemis 2 trajectory** is a parametric model based on the published mission profile (free-return lunar flyby, ~10 days). The real SPICE kernels for Artemis 2 are not yet available in JPL Horizons (typically released months after mission completion). The model reproduces the correct mission phases — LEO parking orbit, trans-lunar coast, lunar flyby, return coast — with physically plausible dynamics, but does not match the real trajectory precisely.
+
+The spacecraft's flyby arc is computed in the Moon's reference frame and correctly tracks the Moon's motion, preventing visual collisions.
+
 ## About Artemis 2
 
-Artemis 2 is NASA's first crewed lunar mission since Apollo 17 (1972). The Orion spacecraft with four astronauts performs a free-return trajectory around the Moon — flying out to lunar distance, swinging around the far side, and returning to Earth. The mission covers approximately 10 days.
+Artemis 2 (April 2026) is NASA's first crewed lunar mission since Apollo 17 (1972). The Orion spacecraft with four astronauts — Reid Wiseman, Victor Glover, Christina Koch, and Jeremy Hansen — performed a free-return trajectory around the Moon, flying out to lunar distance, swinging around the far side, and returning to Earth in approximately 10 days.
 
 ## License
 
