@@ -19,8 +19,8 @@ Artemis 2 spacecraft:
 
 MISSION DATE
 ============
-Launch: 2026-04-09 (approximate; exact time TBC — data from post-cutoff period).
-NASA was targeting early April 2026 for Artemis 2.
+Launch: 2026-04-01T22:35:00Z (confirmed — Launch Complex 39B, Kennedy Space Center).
+Mission duration: April 1–11, 2026. Source: NASA.gov launch day blog.
 
 FIXES IN v3 OVER v2
 ===================
@@ -42,7 +42,7 @@ from datetime import datetime, timezone, timedelta
 # ---------------------------------------------------------------------------
 # Mission parameters
 # ---------------------------------------------------------------------------
-MISSION_START_ISO = "2026-04-09T18:00:00Z"   # approximate launch (April 2026)
+MISSION_START_ISO = "2026-04-01T22:35:00Z"   # confirmed launch (NASA.gov)
 MISSION_DURATION_DAYS = 10
 STEP_MINUTES = 1
 
