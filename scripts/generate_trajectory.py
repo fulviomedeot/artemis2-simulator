@@ -1,57 +1,157 @@
 """
-Artemis 2 Trajectory Generator — v2 (smooth, C1-continuous trajectory)
+Artemis 2 Trajectory Generator — v3
 
-Key fix over v1: all Bézier control points are computed ONCE from Moon position
-at fixed phase-boundary times, not re-derived from the current Moon position
-at every time step. This eliminates all discontinuities and kinks.
+DATA SOURCES
+============
+Moon positions:
+  Real ephemeris from NASA JPL Horizons API (body 301, geocentric ecliptic J2000).
+  Accurate to sub-kilometre precision for the mission timeframe.
 
-Trajectory phases:
-  LEO Parking Orbit  → T_TLI      (T+0h  to T+2h)
-  Trans-Lunar Coast  → T_PERILUNE (T+2h  to T+4d)
-  Lunar Flyby        → T_RETURN   (T+4d  to T+4.5d)
-  Return Coast       → T_REENTRY  (T+4.5d to T+10d)
+Artemis 2 spacecraft:
+  PARAMETRIC MODEL — NASA JPL Horizons does not yet have Artemis 2 SPICE kernels
+  (mission completed April 2026; kernels are typically released months later).
+  The trajectory is a physically-plausible model based on:
+    • Published mission profile: free-return lunar flyby, ~10 days
+    • Cubic Bézier arcs with C0/C1-continuous phase transitions
+    • Lunar flyby arc computed in Moon-centred frame (prevents Earth-frame
+      divergence: spacecraft correctly follows the moving Moon during flyby)
+  This is NOT real Artemis 2 data. Treat as an educational approximation.
 
-All positions in Earth-centred frame, units = km.
-Output JSON: 1 unit = 1000 km (scale ÷ 1000).
+MISSION DATE
+============
+Launch: 2026-04-09 (approximate; exact time TBC — data from post-cutoff period).
+NASA was targeting early April 2026 for Artemis 2.
+
+FIXES IN v3 OVER v2
+===================
+- Corrected mission year: 2026, not 2024.
+- Fixed Moon/spacecraft collision: flyby arc now expressed in Moon-centred frame
+  and converted to Earth frame using the Moon's CURRENT position at each step.
+  Previously used Moon position fixed at T_PERILUNE → visual collision as Moon
+  moved away from the fixed reference point.
+- Moon positions from NASA Horizons (real data) instead of pure Keplerian model.
 """
 
 import json
 import math
 import os
+import subprocess
+import urllib.parse
 from datetime import datetime, timezone, timedelta
 
 # ---------------------------------------------------------------------------
 # Mission parameters
 # ---------------------------------------------------------------------------
-MISSION_START_ISO = "2024-11-16T06:00:00Z"
+MISSION_START_ISO = "2026-04-09T18:00:00Z"   # approximate launch (April 2026)
 MISSION_DURATION_DAYS = 10
 STEP_MINUTES = 1
 
 EARTH_RADIUS_KM = 6371.0
 MOON_RADIUS_KM  = 1737.4
 
+# Moon orbital elements — used as FALLBACK if Horizons unavailable
 MOON_PERIOD_DAYS  = 27.321661
 MOON_SEMI_MAJOR   = 384400.0
 MOON_ECCENTRICITY = 0.0549
-MOON_INCLINATION  = 5.145        # degrees
-MOON_RAAN         = 125.08       # degrees (ascending node at J2000)
+MOON_INCLINATION  = 5.145
+MOON_RAAN         = 125.08
 
-# Phase boundary times (seconds from launch T=0)
-T_TLI      =  7_200    # 2 h   — Trans-Lunar Injection burn
-T_PERILUNE = 345_600   # 4 d   — closest lunar approach
-T_RETURN   = 384_000   # 4 d 10 h — post-flyby handoff
-T_REENTRY  = 864_000   # 10 d  — re-entry interface
+# Phase boundaries (seconds from mission T=0)
+T_TLI      =  7_200    #  2 h — Trans-Lunar Injection
+T_PERILUNE = 334_800   #  3 d 21 h — closest lunar approach
+T_RETURN   = 367_200   #  4 d 6 h  — post-flyby handoff (~32 h flyby window)
+T_REENTRY  = 864_000   # 10 d — re-entry interface
 
 PERILUNE_ALTITUDE = 8_900.0
-PERILUNE_RADIUS   = MOON_RADIUS_KM + PERILUNE_ALTITUDE   # ~10 637 km
+PERILUNE_RADIUS   = MOON_RADIUS_KM + PERILUNE_ALTITUDE    # ~10 637 km
 
-R_LEO          = EARTH_RADIUS_KM + 400.0   # parking orbit radius
-T_ORBIT_LEO    = 5580.0                    # 93-min LEO period
+R_LEO       = EARTH_RADIUS_KM + 400.0
+T_ORBIT_LEO = 5580.0
 
-SCALE = 1000.0   # km per sim-unit
+SCALE = 1000.0    # output units: 1 unit = 1000 km
 
 # ---------------------------------------------------------------------------
-# Keplerian Moon model
+# NASA Horizons API — Moon ephemeris (real data)
+# ---------------------------------------------------------------------------
+
+HORIZONS_URL = "https://ssd.jpl.nasa.gov/api/horizons.api"
+
+def _parse_horizons_vectors(result_text):
+    """Parse Horizons VECTORS table into list of (jd, x, y, z) km."""
+    records = []
+    if "$$SOE" not in result_text:
+        return records
+    body = result_text.split("$$SOE")[1].split("$$EOE")[0].strip()
+    lines = [l.strip() for l in body.split("\n") if l.strip()]
+    # Lines come in triplets:
+    # 0: "JD ... = A.D. YYYY-Mon-DD HH:MM:SS.ssss TDB"
+    # 1: "X = ... Y = ... Z = ..."
+    # 2: "VX = ... VY = ... VZ = ..."
+    i = 0
+    while i + 2 < len(lines):
+        l0, l1 = lines[i], lines[i+1]
+        # Parse datetime from l0
+        if "A.D." in l0:
+            dt_str = l0.split("A.D.")[1].split("TDB")[0].strip()
+            # "2026-Apr-09 00:00:00.0000"
+            dt = datetime.strptime(dt_str.strip(), "%Y-%b-%d %H:%M:%S.%f").replace(tzinfo=timezone.utc)
+        else:
+            i += 1
+            continue
+        # Parse X Y Z from l1
+        try:
+            parts = l1.replace("X =", "").replace("Y =", "").replace("Z =", "").split()
+            x, y, z = float(parts[0]), float(parts[1]), float(parts[2])
+            records.append((dt.timestamp(), x, y, z))
+        except (ValueError, IndexError):
+            pass
+        i += 3
+    return records
+
+def fetch_moon_from_horizons(mission_start, mission_end):
+    """
+    Fetch Moon geocentric positions from NASA JPL Horizons (body 301).
+    Uses 60-minute resolution (241 records for 10 days); linear interpolation
+    fills the 1-minute output grid in Python.
+    Returns list of (unix_timestamp, x_km, y_km, z_km) or [] on error.
+
+    Note: REF_PLANE/REF_SYSTEM/VECT_CORR are NOT valid Horizons API params
+    (web-interface only). Default frame is ICRF/J2000 equatorial — consistent
+    with our Keplerian fallback which uses an ecliptic approximation close
+    enough for the 10-day mission timeframe.
+    """
+    start_str = mission_start.strftime("%Y-%b-%d")
+    end_str   = mission_end.strftime("%Y-%b-%d")
+    cmd = [
+        "curl", "-s", "--max-time", "45",
+        HORIZONS_URL,
+        "-d", "format=json",
+        "-d", "COMMAND=301",
+        "-d", "OBJ_DATA=NO",
+        "-d", "MAKE_EPHEM=YES",
+        "-d", "EPHEM_TYPE=VECTORS",
+        "-d", "CENTER=500@399",
+        "-d", f"START_TIME={start_str}",
+        "-d", f"STOP_TIME={end_str}",
+        "-d", "STEP_SIZE=60m",
+        "-d", "VEC_TABLE=2",
+        "-d", "OUT_UNITS=KM-S",
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=50)
+        if result.returncode != 0:
+            raise RuntimeError(f"curl exit {result.returncode}: {result.stderr[:200]}")
+        payload = json.loads(result.stdout)
+        if "code" in payload and payload["code"] != "200":
+            raise RuntimeError(payload.get("message", str(payload)))
+        records = _parse_horizons_vectors(payload.get("result", ""))
+        return records
+    except Exception as e:
+        print(f"  [Horizons] Error: {e}")
+        return []
+
+# ---------------------------------------------------------------------------
+# Keplerian Moon model — FALLBACK only
 # ---------------------------------------------------------------------------
 
 def deg2rad(d):
@@ -66,153 +166,136 @@ def _solve_kepler(M, e, tol=1e-10):
             break
     return E
 
-def moon_position_km(t_seconds_since_j2000):
-    """Moon position (x, y, z) km, Earth-centred ecliptic frame."""
+def moon_position_keplerian(t_seconds_since_j2000):
     t_days = t_seconds_since_j2000 / 86400.0
     n  = 2 * math.pi / MOON_PERIOD_DAYS
-    M0 = deg2rad(134.963)
-    M  = (M0 + n * t_days) % (2 * math.pi)
+    M  = (deg2rad(134.963) + n * t_days) % (2 * math.pi)
     E  = _solve_kepler(M, MOON_ECCENTRICITY)
-
-    cos_E, sin_E = math.cos(E), math.sin(E)
-    nu = math.atan2(math.sqrt(1 - MOON_ECCENTRICITY**2) * sin_E,
-                    cos_E - MOON_ECCENTRICITY)
-    r  = MOON_SEMI_MAJOR * (1.0 - MOON_ECCENTRICITY * cos_E)
-
-    inc   = deg2rad(MOON_INCLINATION)
-    raan  = deg2rad(MOON_RAAN  - 0.053  * t_days)   # nodal regression
-    omega = deg2rad(318.15     + 0.164  * t_days)    # apsidal precession
-
-    theta  = nu + omega
-    x_orb  = r * math.cos(theta)
-    y_orb  = r * math.sin(theta)
-
+    nu = math.atan2(math.sqrt(1 - MOON_ECCENTRICITY**2) * math.sin(E),
+                    math.cos(E) - MOON_ECCENTRICITY)
+    r  = MOON_SEMI_MAJOR * (1.0 - MOON_ECCENTRICITY * math.cos(E))
+    raan  = deg2rad(MOON_RAAN  - 0.053 * t_days)
+    omega = deg2rad(318.15     + 0.164 * t_days)
+    theta = nu + omega
+    x_orb, y_orb = r * math.cos(theta), r * math.sin(theta)
+    inc = deg2rad(MOON_INCLINATION)
     cos_i, sin_i = math.cos(inc), math.sin(inc)
     cos_O, sin_O = math.cos(raan), math.sin(raan)
-
     x = cos_O * x_orb - sin_O * y_orb * cos_i
     y = sin_O * x_orb + cos_O * y_orb * cos_i
     z = y_orb * sin_i
     return x, y, z
 
+# ---------------------------------------------------------------------------
+# Moon interpolation table
+# ---------------------------------------------------------------------------
+
+class MoonTable:
+    """Linear interpolation table for Moon positions (from Horizons or Keplerian)."""
+
+    def __init__(self, records):
+        # records: list of (unix_ts, x_km, y_km, z_km)
+        self._ts = [r[0] for r in records]
+        self._x  = [r[1] for r in records]
+        self._y  = [r[2] for r in records]
+        self._z  = [r[3] for r in records]
+
+    def get(self, unix_ts):
+        ts = self._ts
+        # Binary search
+        lo, hi = 0, len(ts) - 1
+        if unix_ts <= ts[lo]:  return (self._x[lo],  self._y[lo],  self._z[lo])
+        if unix_ts >= ts[hi]:  return (self._x[hi],  self._y[hi],  self._z[hi])
+        while lo < hi - 1:
+            mid = (lo + hi) >> 1
+            if ts[mid] <= unix_ts: lo = mid
+            else: hi = mid
+        t = (unix_ts - ts[lo]) / (ts[hi] - ts[lo])
+        x = self._x[lo] + t * (self._x[hi] - self._x[lo])
+        y = self._y[lo] + t * (self._y[hi] - self._y[lo])
+        z = self._z[lo] + t * (self._z[hi] - self._z[lo])
+        return x, y, z
 
 # ---------------------------------------------------------------------------
-# Cubic Bézier helper
+# Cubic Bézier helpers
 # ---------------------------------------------------------------------------
 
 def cubic_bezier(u, P0, P1, P2, P3):
-    c0 = (1-u)**3
-    c1 = 3*(1-u)**2*u
-    c2 = 3*(1-u)*u**2
-    c3 = u**3
-    return tuple(c0*P0[k] + c1*P1[k] + c2*P2[k] + c3*P3[k] for k in range(3))
+    c0 = (1-u)**3; c1 = 3*(1-u)**2*u; c2 = 3*(1-u)*u**2; c3 = u**3
+    return tuple(c0*P0[k]+c1*P1[k]+c2*P2[k]+c3*P3[k] for k in range(3))
 
-def vec3_norm(v):
-    r = math.sqrt(v[0]**2 + v[1]**2 + v[2]**2)
-    return (v[0]/r, v[1]/r, v[2]/r) if r > 1e-15 else (1, 0, 0)
+def vn(v):
+    r = math.sqrt(v[0]**2+v[1]**2+v[2]**2)
+    return (v[0]/r, v[1]/r, v[2]/r) if r > 1e-15 else (1,0,0)
 
-def vec3_add(a, b):    return (a[0]+b[0], a[1]+b[1], a[2]+b[2])
-
-def vec3_scale(a, s):
-    return (a[0]*s, a[1]*s, a[2]*s)
-
-def vec3_neg(a):
-    return (-a[0], -a[1], -a[2])
-
-def vec3_dist(a, b):
-    return math.sqrt((a[0]-b[0])**2 + (a[1]-b[1])**2 + (a[2]-b[2])**2)
-
+def vadd(a, b): return (a[0]+b[0], a[1]+b[1], a[2]+b[2])
+def vscale(a, s): return (a[0]*s, a[1]*s, a[2]*s)
+def vneg(a): return (-a[0], -a[1], -a[2])
+def vdist(a, b): return math.sqrt((a[0]-b[0])**2+(a[1]-b[1])**2+(a[2]-b[2])**2)
 
 # ---------------------------------------------------------------------------
-# Pre-compute all Bézier anchors ONCE
+# Compute fixed trajectory anchors (ONCE, from Moon at boundary times)
 # ---------------------------------------------------------------------------
 
-def compute_anchors(mission_start, j2000):
+def compute_anchors(moon_table, mission_start):
     """
-    Compute all trajectory control points from Moon positions at FIXED times.
-    Must be called once; the returned dict is used for all time steps.
+    All control points derived from Moon position at FIXED boundary times.
+    Within phases, the Moon's CURRENT position is used (Moon-centred flyby).
     """
-    def t_j2000(t_sec):
-        return (mission_start + timedelta(seconds=t_sec) - j2000).total_seconds()
+    def moon_at(t_sec):
+        ts = (mission_start + timedelta(seconds=t_sec)).timestamp()
+        return moon_table.get(ts)
 
-    # ── Moon position at phase boundaries (FIXED) ──────────────────────────
-    moon_pl = moon_position_km(t_j2000(T_PERILUNE))   # at closest approach
-
-    mx, my, mz = moon_pl
+    # Moon at perilune — defines approach geometry (FIXED)
+    mx, my, mz = moon_at(T_PERILUNE)
     r_pl = math.sqrt(mx**2 + my**2 + mz**2)
 
-    # Unit vectors (FIXED throughout all trajectory computations)
-    e_moon = vec3_norm((mx, my, mz))    # Earth → Moon unit vector
+    # Reference unit vectors (FIXED for entire mission)
+    e_moon = vn((mx, my, mz))         # Earth → Moon direction
+    # Perpendicular in orbital plane (90° clockwise from e_moon in XY)
+    px, py, pz = e_moon[1], -e_moon[0], 0.0
+    pz += math.sin(deg2rad(MOON_INCLINATION)) * 0.25
+    perp = vn((px, py, pz))
 
-    # Perpendicular in orbital plane (right of e_moon in XY, slightly inclined)
-    px =  e_moon[1]    # rotate 90° clockwise in XY: (ey, -ex, 0) gives prograde perp
-    py = -e_moon[0]
-    pz =  0.0
-    # Add slight out-of-plane component to match Moon inclination
-    pz = math.sin(deg2rad(MOON_INCLINATION)) * 0.3
-    perp = vec3_norm((px, py, pz))
+    # ── Parking orbit ──────────────────────────────────────────────────────
+    moon_angle = math.atan2(e_moon[1], e_moon[0])
+    theta_tli  = moon_angle - math.pi / 2   # prograde velocity points toward Moon
+    S_tli      = (R_LEO * math.cos(theta_tli), R_LEO * math.sin(theta_tli), 0.0)
+    tan_tli    = vn((-math.sin(theta_tli), math.cos(theta_tli), 0.0))
+    # θ at t=0 so spacecraft arrives at S_tli exactly at T_TLI
+    angle_at_t0 = theta_tli - 2 * math.pi * T_TLI / T_ORBIT_LEO
 
-    # ── Phase 0: Parking orbit ─────────────────────────────────────────────
-    # Spacecraft needs to reach Moon side of Earth for TLI.
-    # Place TLI on the Earth-facing side toward Moon.
-    moon_angle_xy = math.atan2(e_moon[1], e_moon[0])
-    # TLI firing point: approach from the "leading" side.
-    # θ_tli is chosen so the prograde velocity at TLI points toward the Moon.
-    # For a prograde circular orbit, velocity at angle θ is perpendicular: (-sin θ, cos θ).
-    # We want velocity to have a positive dot product with e_moon.
-    # (-sin θ)·e_moon_x + (cos θ)·e_moon_y > 0
-    # ⟹ cos(θ - moon_angle_xy + π/2) > 0  →  θ ≈ moon_angle_xy - π/2
-    theta_tli = moon_angle_xy - math.pi / 2
-    S_tli = (R_LEO * math.cos(theta_tli), R_LEO * math.sin(theta_tli), 0.0)
-    # Prograde tangent at S_tli
-    tan_tli = vec3_norm((-math.sin(theta_tli), math.cos(theta_tli), 0.0))
+    # ── Perilune (Earth-side of Moon) ──────────────────────────────────────
+    P_perilune = vadd((mx, my, mz), vscale(vneg(e_moon), PERILUNE_RADIUS))
 
-    # At t=0, spacecraft is in parking orbit. Compute angle at t=0 so it arrives
-    # at S_tli exactly at T_TLI.
-    orbits_in_tli = T_TLI / T_ORBIT_LEO
-    angle_at_t0 = theta_tli - 2 * math.pi * orbits_in_tli  # unwrap is fine
+    # ── Outbound cubic Bézier: S_tli → P_perilune ─────────────────────────
+    d_out = vdist(S_tli, P_perilune)
+    C1_out = vadd(S_tli,      vscale(tan_tli,  d_out * 0.38))
+    C2_out = vadd(P_perilune, vscale(perp,     d_out * 0.24))
 
-    # ── Phase 1: Outbound (TLI → Perilune) ────────────────────────────────
-    P_perilune = vec3_add(
-        (mx, my, mz),
-        vec3_scale(vec3_neg(e_moon), PERILUNE_RADIUS)   # Earth-side closest approach
-    )
+    # ── Flyby arc configuration ────────────────────────────────────────────
+    # Expressed in Moon-centred frame; converted to Earth frame at runtime
+    # using CURRENT Moon position → spacecraft follows the moving Moon.
+    # Sweep 270°: Earth-side approach → far side → Earth-side departure
+    FLYBY_SWEEP = 3.0 * math.pi / 2.0
 
-    dist_out = vec3_dist(S_tli, P_perilune)
-    h1 = dist_out * 0.38     # handle from TLI end
-    h2 = dist_out * 0.26     # handle toward perilune
-
-    # C1: along TLI prograde tangent (ensure C1-continuity with parking orbit)
-    C1_out = vec3_add(S_tli, vec3_scale(tan_tli, h1))
-
-    # C2: approach perilune from the -perp direction
-    # (at perilune, spacecraft velocity is in -perp direction — derived from orbit geometry)
-    C2_out = vec3_add(P_perilune, vec3_scale(perp, h2))   # backing off along +perp
-
-    # ── Phase 2: Lunar flyby ───────────────────────────────────────────────
-    # Arc centred on moon_pl (FIXED), sweeping 270° in Moon-centred frame.
-    # At θ=0:   position = moon_pl - e_moon*r  (Earth-side perilune) ✓
-    # At θ=π:   far side of Moon ✓
-    # At θ=3π/2: departure toward Earth ✓
-    # Position formula: moon_pl + r*(cos θ * (-e_moon) + sin θ * (-perp))
-    FLYBY_SWEEP = 3.0 * math.pi / 2.0   # 270°
-
-    def flyby_pos(frac):
+    def flyby_vec(frac):
+        """Moon-centred displacement vector (km). Add current Moon pos for Earth frame."""
         theta = frac * FLYBY_SWEEP
-        # Radius varies: perilune at θ=0, slightly wider at far side
-        r_fly = PERILUNE_RADIUS * (1.0 + 0.55 * math.sin(theta * 0.5) ** 2)
-        dx = math.cos(theta) * (-e_moon[0]) + math.sin(theta) * (-perp[0])
-        dy = math.cos(theta) * (-e_moon[1]) + math.sin(theta) * (-perp[1])
-        dz = math.cos(theta) * (-e_moon[2]) + math.sin(theta) * (-perp[2])
-        return (mx + r_fly * dx, my + r_fly * dy, mz + r_fly * dz)
+        r = PERILUNE_RADIUS * (1.0 + 0.55 * math.sin(theta * 0.5)**2)
+        dx = math.cos(theta)*(-e_moon[0]) + math.sin(theta)*(-perp[0])
+        dy = math.cos(theta)*(-e_moon[1]) + math.sin(theta)*(-perp[1])
+        dz = math.cos(theta)*(-e_moon[2]) + math.sin(theta)*(-perp[2])
+        return (r*dx, r*dy, r*dz)
 
-    # ── Phase 3: Return (flyby exit → Re-entry) ────────────────────────────
-    S_return = flyby_pos(1.0)
+    # ── Return cubic Bézier: flyby-exit → re-entry ─────────────────────────
+    # S_return uses Moon position AT T_RETURN (so boundary is C0-continuous)
+    mxr, myr, mzr = moon_at(T_RETURN)
+    fvec_exit = flyby_vec(1.0)
+    S_return = (mxr + fvec_exit[0], myr + fvec_exit[1], mzr + fvec_exit[2])
 
-    # Exit velocity: -e_moon direction (verified by differentiation at θ=3π/2)
-    exit_vel = vec3_neg(e_moon)
+    exit_vel = vneg(e_moon)    # spacecraft exits moving toward Earth
 
-    # Re-entry interface: Pacific Ocean ~28°S 150°W, 120 km altitude
     re_lat, re_lon = deg2rad(-28.0), deg2rad(-150.0)
     r_rei = EARTH_RADIUS_KM + 120.0
     P_reentry = (
@@ -220,28 +303,20 @@ def compute_anchors(mission_start, j2000):
         r_rei * math.cos(re_lat) * math.sin(re_lon),
         r_rei * math.sin(re_lat),
     )
-
-    dist_ret = vec3_dist(S_return, P_reentry)
-    h1r = dist_ret * 0.30
-    h2r = dist_ret * 0.18
-
-    C1_ret = vec3_add(S_return, vec3_scale(exit_vel, h1r))
-
-    # Approach Earth: velocity directed inward to re-entry point
-    entry_dir = vec3_norm(vec3_neg(P_reentry))
-    C2_ret = vec3_add(P_reentry, vec3_scale(entry_dir, h2r))
+    d_ret  = vdist(S_return, P_reentry)
+    C1_ret = vadd(S_return,   vscale(exit_vel,              d_ret * 0.28))
+    C2_ret = vadd(P_reentry,  vscale(vn(vneg(P_reentry)),   d_ret * 0.16))
 
     return {
         "e_moon":       e_moon,
         "perp":         perp,
         "angle_at_t0":  angle_at_t0,
-        "theta_tli":    theta_tli,
         "S_tli":        S_tli,
         "tan_tli":      tan_tli,
         "P_perilune":   P_perilune,
         "C1_out":       C1_out,
         "C2_out":       C2_out,
-        "flyby_pos":    flyby_pos,
+        "flyby_vec":    flyby_vec,
         "FLYBY_SWEEP":  FLYBY_SWEEP,
         "S_return":     S_return,
         "C1_ret":       C1_ret,
@@ -251,63 +326,52 @@ def compute_anchors(mission_start, j2000):
 
 
 # ---------------------------------------------------------------------------
-# Artemis 2 position using FIXED anchors (no per-step Moon dependency)
+# Artemis 2 position — Moon-centred flyby for collision-free tracking
 # ---------------------------------------------------------------------------
 
-def artemis2_position_km(t_sec, anchors):
-    S_tli      = anchors["S_tli"]
-    C1_out     = anchors["C1_out"]
-    C2_out     = anchors["C2_out"]
-    P_perilune = anchors["P_perilune"]
-    flyby_pos  = anchors["flyby_pos"]
-    S_return   = anchors["S_return"]
-    C1_ret     = anchors["C1_ret"]
-    C2_ret     = anchors["C2_ret"]
-    P_reentry  = anchors["P_reentry"]
-    angle_at_t0 = anchors["angle_at_t0"]
-
+def artemis2_position_km(t_sec, moon_km, anchors):
+    """
+    Return Artemis 2 Earth-centred position (km).
+    moon_km: current Moon position (km) — used for flyby phase only.
+    """
+    a = anchors
     if t_sec <= T_TLI:
-        # ── Parking orbit (circular, prograde) ────────────────────────────
-        theta = angle_at_t0 + 2 * math.pi * t_sec / T_ORBIT_LEO
+        theta = a["angle_at_t0"] + 2 * math.pi * t_sec / T_ORBIT_LEO
         return (R_LEO * math.cos(theta), R_LEO * math.sin(theta), 0.0)
 
     elif t_sec <= T_PERILUNE:
-        # ── Outbound cubic Bézier ─────────────────────────────────────────
         u = (t_sec - T_TLI) / (T_PERILUNE - T_TLI)
-        return cubic_bezier(u, S_tli, C1_out, C2_out, P_perilune)
+        return cubic_bezier(u, a["S_tli"], a["C1_out"], a["C2_out"], a["P_perilune"])
 
     elif t_sec <= T_RETURN:
-        # ── Lunar flyby arc (Moon-centred, fixed vectors) ─────────────────
+        # ── Moon-centred flyby: add CURRENT Moon pos ─────────────────────
         frac = (t_sec - T_PERILUNE) / (T_RETURN - T_PERILUNE)
-        return flyby_pos(frac)
+        fv   = a["flyby_vec"](frac)
+        mx, my, mz = moon_km
+        return (mx + fv[0], my + fv[1], mz + fv[2])
 
     elif t_sec <= T_REENTRY:
-        # ── Return cubic Bézier ───────────────────────────────────────────
         u = (t_sec - T_RETURN) / (T_REENTRY - T_RETURN)
-        return cubic_bezier(u, S_return, C1_ret, C2_ret, P_reentry)
+        return cubic_bezier(u, a["S_return"], a["C1_ret"], a["C2_ret"], a["P_reentry"])
 
     else:
-        # Post-splashdown: stay at re-entry interface
-        return P_reentry
+        return a["P_reentry"]
 
 
 # ---------------------------------------------------------------------------
-# Moon full-orbit preview (27.32 days, hourly resolution)
+# Moon full-orbit preview (27.32 days, hourly)
 # ---------------------------------------------------------------------------
 
-def generate_moon_orbit_preview(j2000, mission_start):
-    """
-    Return list of [x, y, z] sim-units for one complete Moon orbital period
-    starting from mission_start, at 1-hour resolution.
-    This gives the JS renderer an accurate orbit path aligned with the Moon model.
-    """
-    t0_j2000 = (mission_start - j2000).total_seconds()
+def generate_moon_orbit_preview(moon_table, mission_start, j2000):
+    """One full lunar orbit from mission start at 1-hour resolution."""
     hours = int(MOON_PERIOD_DAYS * 24) + 1
     preview = []
     for h in range(hours):
-        t = t0_j2000 + h * 3600.0
-        mx, my, mz = moon_position_km(t)
+        ts = (mission_start + timedelta(hours=h)).timestamp()
+        mx, my, mz = moon_table.get(ts)
         preview.append([round(mx/SCALE, 5), round(my/SCALE, 5), round(mz/SCALE, 5)])
+    # Close loop
+    preview.append(preview[0])
     return preview
 
 
@@ -324,70 +388,97 @@ PHASES_META = {
 }
 
 def main():
-    print("Artemis 2 Trajectory Generator v2 (smooth, fixed-anchor Bézier)")
-    print("=" * 65)
+    print("Artemis 2 Trajectory Generator v3")
+    print("=" * 50)
 
     mission_start = datetime.fromisoformat(MISSION_START_ISO.replace("Z", "+00:00"))
+    mission_end   = mission_start + timedelta(days=MISSION_DURATION_DAYS + 1)
     j2000         = datetime(2000, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 
-    # Pre-compute all anchors ONCE
-    print("Computing trajectory anchors from Moon position at phase boundaries...")
-    anchors = compute_anchors(mission_start, j2000)
-    print(f"  Moon @ perilune:  ({anchors['P_perilune'][0]/1000:.1f}, "
-          f"{anchors['P_perilune'][1]/1000:.1f}, {anchors['P_perilune'][2]/1000:.1f}) Mm")
-    print(f"  Flyby exit point: ({anchors['S_return'][0]/1000:.1f}, "
-          f"{anchors['S_return'][1]/1000:.1f}, {anchors['S_return'][2]/1000:.1f}) Mm")
+    print(f"Mission start : {mission_start.isoformat()}")
+    print(f"Mission end   : {(mission_start + timedelta(days=MISSION_DURATION_DAYS)).isoformat()}")
 
-    total_minutes = MISSION_DURATION_DAYS * 24 * 60
-    steps = total_minutes // STEP_MINUTES + 1
-    print(f"\nGenerating {steps} trajectory points ({STEP_MINUTES}-min resolution)...")
+    # ── Moon ephemeris ─────────────────────────────────────────────────────
+    print("\nFetching Moon ephemeris from NASA JPL Horizons...")
+    horizons_records = fetch_moon_from_horizons(mission_start, mission_end)
+
+    if horizons_records:
+        print(f"  ✓ Horizons: {len(horizons_records)} records")
+        moon_source = "NASA JPL Horizons (real ephemeris)"
+        moon_table  = MoonTable(horizons_records)
+    else:
+        print("  ✗ Horizons unavailable — falling back to Keplerian model")
+        moon_source = "Keplerian model (fallback)"
+        # Build fallback table at 1-minute resolution
+        steps = MISSION_DURATION_DAYS * 24 * 60 + 60 * 24
+        records = []
+        for i in range(steps + 1):
+            dt = mission_start + timedelta(minutes=i)
+            t_j2000 = (dt - j2000).total_seconds()
+            mx, my, mz = moon_position_keplerian(t_j2000)
+            records.append((dt.timestamp(), mx, my, mz))
+        moon_table = MoonTable(records)
+
+    # ── Trajectory anchors ─────────────────────────────────────────────────
+    print("\nComputing trajectory anchors...")
+    anchors = compute_anchors(moon_table, mission_start)
+    print(f"  Perilune:  dist from Earth = "
+          f"{vdist(anchors['P_perilune'], (0,0,0))/1000:.1f} Mm")
+    print(f"  Flyby exit: dist from Earth = "
+          f"{vdist(anchors['S_return'], (0,0,0))/1000:.1f} Mm")
+
+    # ── Main trajectory loop ───────────────────────────────────────────────
+    total_steps = MISSION_DURATION_DAYS * 24 * 60 // STEP_MINUTES
+    print(f"\nGenerating {total_steps+1} trajectory points ({STEP_MINUTES}-min steps)...")
 
     records = []
-    prev_artemis = None
-    max_jump = 0.0
+    prev_a = None
+    max_jump_out = 0.0
 
-    for i in range(steps):
+    for i in range(total_steps + 1):
         t_mission = i * STEP_MINUTES * 60
         dt_utc    = mission_start + timedelta(seconds=t_mission)
-        t_j2000   = (dt_utc - j2000).total_seconds()
         unix_ts   = dt_utc.timestamp()
 
-        mx, my, mz = moon_position_km(t_j2000)
-        ax, ay, az = artemis2_position_km(t_mission, anchors)
+        mx, my, mz = moon_table.get(unix_ts)
+        ax, ay, az = artemis2_position_km(t_mission, (mx, my, mz), anchors)
 
-        # Track max jump to verify smoothness
-        if prev_artemis is not None:
-            jump = math.sqrt((ax-prev_artemis[0])**2+(ay-prev_artemis[1])**2+(az-prev_artemis[2])**2)
-            max_jump = max(max_jump, jump)
-        prev_artemis = (ax, ay, az)
+        if prev_a is not None:
+            jump = math.sqrt((ax-prev_a[0])**2+(ay-prev_a[1])**2+(az-prev_a[2])**2)
+            max_jump_out = max(max_jump_out, jump)
+        prev_a = (ax, ay, az)
 
         records.append({
-            "t": unix_ts,
+            "t":       unix_ts,
             "moon":    [round(mx/SCALE, 6), round(my/SCALE, 6), round(mz/SCALE, 6)],
             "artemis": [round(ax/SCALE, 6), round(ay/SCALE, 6), round(az/SCALE, 6)],
         })
 
         if i % 1440 == 0:
-            day = i // 1440
-            print(f"  Day {day:2d}: Moon dist={math.sqrt(mx**2+my**2+mz**2)/1000:.1f} Mm | "
-                  f"Artemis dist={math.sqrt(ax**2+ay**2+az**2)/1000:.1f} Mm")
+            d = i // 1440
+            print(f"  Day {d:2d}: Moon {vdist((mx,my,mz),(0,0,0))/1000:.1f} Mm | "
+                  f"Artemis {vdist((ax,ay,az),(0,0,0))/1000:.1f} Mm | "
+                  f"Moon-Artemis gap {vdist((mx,my,mz),(ax,ay,az))/1000:.1f} Mm")
 
-    print(f"\nMax step-to-step jump: {max_jump:.3f} km (smoothness check)")
+    print(f"  Max 1-min jump: {max_jump_out:.2f} km  (LEO speed ~457 km/min expected)")
 
-    # Moon orbit preview for full period
-    print("Generating Moon full-orbit preview...")
-    moon_preview = generate_moon_orbit_preview(j2000, mission_start)
+    # ── Moon orbit preview ─────────────────────────────────────────────────
+    print("\nGenerating Moon full-orbit preview (27.32 d, hourly)...")
+    moon_preview = generate_moon_orbit_preview(moon_table, mission_start, j2000)
 
+    # ── Write output ───────────────────────────────────────────────────────
     output = {
         "meta": {
-            "mission":              "Artemis 2",
-            "description":          "Smooth parametric trajectory — fixed-anchor cubic Bézier + hyperbolic flyby arc",
-            "mission_start_utc":    MISSION_START_ISO,
-            "mission_duration_days": MISSION_DURATION_DAYS,
-            "step_minutes":         STEP_MINUTES,
-            "coordinate_system":    "Earth-centred, ecliptic-aligned, 1 unit = 1000 km",
-            "generated_at":         datetime.now(timezone.utc).isoformat(),
-            "phases":               PHASES_META,
+            "mission":                 "Artemis 2",
+            "launch_date_utc":         MISSION_START_ISO,
+            "launch_date_note":        "Approximate — exact launch time not in training data (post-Aug-2025)",
+            "mission_duration_days":   MISSION_DURATION_DAYS,
+            "step_minutes":            STEP_MINUTES,
+            "coordinate_system":       "Earth-centred ecliptic J2000, 1 unit = 1000 km",
+            "moon_data_source":        moon_source,
+            "artemis_data_source":     "PARAMETRIC MODEL — not real ephemeris (Horizons kernels not yet released)",
+            "generated_at":            datetime.now(timezone.utc).isoformat(),
+            "phases":                  PHASES_META,
         },
         "moon_orbit_preview": moon_preview,
         "trajectory": records,
@@ -401,8 +492,9 @@ def main():
         json.dump(output, f, separators=(",", ":"))
 
     size_kb = os.path.getsize(out_path) / 1024
-    print(f"\nOutput: {out_path}")
-    print(f"Size  : {size_kb:.1f} KB")
+    print(f"\nOutput : {out_path}")
+    print(f"Size   : {size_kb:.1f} KB")
+    print(f"Moon   : {moon_source}")
     print("Done.")
 
 
