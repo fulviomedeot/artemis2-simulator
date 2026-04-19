@@ -32,7 +32,8 @@ export class Simulation {
     if (!res.ok) throw new Error(`Failed to load trajectory: ${res.status}`);
     const data = await res.json();
     this.trajectory   = data.trajectory;
-    this.meta         = data.meta;
+    // Store moon preview inside meta for convenient access in buildMoonOrbitLine()
+    this.meta         = { ...data.meta, _moonPreview: data.moon_orbit_preview || [] };
     this.missionStart = this.trajectory[0].t;
     this.missionEnd   = this.trajectory[this.trajectory.length - 1].t;
     this.simTime      = this.missionStart;
@@ -117,21 +118,61 @@ export class Simulation {
     return this.trajectory ? this.trajectory.length - 1 : 14400;
   }
 
-  // ── Build Three.js Line from full trajectory (Artemis orbit preview) ──
-  buildOrbitLine() {
+  // ── Artemis full-mission orbit preview line (from trajectory data) ──────
+  buildArtemisOrbitLine() {
     const traj = this.trajectory;
     const points = [];
-    const step = Math.max(1, Math.floor(traj.length / 600));  // ~600 segments
+    const step = Math.max(1, Math.floor(traj.length / 800));
     for (let i = 0; i < traj.length; i += step) {
       const p = traj[i].artemis;
       points.push(new THREE.Vector3(p[0], p[1], p[2]));
     }
+    // Close the loop back to last point
+    const last = traj[traj.length - 1].artemis;
+    points.push(new THREE.Vector3(last[0], last[1], last[2]));
 
     const geo = new THREE.BufferGeometry().setFromPoints(points);
     const mat = new THREE.LineBasicMaterial({
-      color:       0x885500,
+      color:       0x994400,
       transparent: true,
-      opacity:     0.3,
+      opacity:     0.28,
+    });
+    return new THREE.Line(geo, mat);
+  }
+
+  // ── Moon full-orbit preview line (from moon_orbit_preview in JSON) ───────
+  // This is EXACTLY aligned with the Moon's simulated position because it uses
+  // the same Keplerian model as the trajectory data.
+  buildMoonOrbitLine() {
+    const preview = this.meta._moonPreview;
+    if (!preview || preview.length === 0) {
+      // Fallback: build from 10-day trajectory arc
+      return this._buildMoonArcFromTrajectory();
+    }
+    const points = preview.map(p => new THREE.Vector3(p[0], p[1], p[2]));
+    // Close the orbit loop
+    points.push(points[0].clone());
+
+    const geo = new THREE.BufferGeometry().setFromPoints(points);
+    const mat = new THREE.LineBasicMaterial({
+      color:       0x334466,
+      transparent: true,
+      opacity:     0.35,
+    });
+    return new THREE.Line(geo, mat);
+  }
+
+  _buildMoonArcFromTrajectory() {
+    const traj = this.trajectory;
+    const points = [];
+    const step = Math.max(1, Math.floor(traj.length / 400));
+    for (let i = 0; i < traj.length; i += step) {
+      const p = traj[i].moon;
+      points.push(new THREE.Vector3(p[0], p[1], p[2]));
+    }
+    const geo = new THREE.BufferGeometry().setFromPoints(points);
+    const mat = new THREE.LineBasicMaterial({
+      color: 0x334466, transparent: true, opacity: 0.35,
     });
     return new THREE.Line(geo, mat);
   }

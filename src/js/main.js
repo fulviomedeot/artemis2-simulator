@@ -100,18 +100,15 @@ async function init() {
   state.earthGroup   = earthGroup.group;
   state.atmosphereMesh = atmosphereMesh;
 
-  // Orbit path lines (static preview arcs)
-  moonOrbitLine = buildMoonOrbitLine();
-  artemisOrbitLine = null;  // built dynamically from trajectory
-  scene.add(moonOrbitLine);
-
-  // Simulation
+  // Simulation (must load BEFORE building orbit lines so data is ready)
   sim = new Simulation();
   await sim.load();
   state.sim = sim;
 
-  // Artemis trajectory orbit line (from data)
-  artemisOrbitLine = sim.buildOrbitLine();
+  // Orbit preview lines — built from trajectory data for perfect alignment
+  moonOrbitLine    = sim.buildMoonOrbitLine();
+  artemisOrbitLine = sim.buildArtemisOrbitLine();
+  scene.add(moonOrbitLine);
   scene.add(artemisOrbitLine);
   state.artemisOrbitLine = artemisOrbitLine;
   state.moonOrbitLine    = moonOrbitLine;
@@ -144,26 +141,6 @@ async function init() {
 
   // Start
   animate();
-}
-
-// ── Moon orbit preview line ──────────────────────────────────────────────
-function buildMoonOrbitLine() {
-  const points = [];
-  const segments = 256;
-  // Average Moon orbit radius in sim units (1 unit = 1000 km)
-  const r = 384.4;
-  const inc = 5.145 * Math.PI / 180;
-  for (let i = 0; i <= segments; i++) {
-    const theta = (i / segments) * Math.PI * 2;
-    points.push(new THREE.Vector3(
-      r * Math.cos(theta),
-      r * Math.sin(theta) * Math.cos(inc),
-      r * Math.sin(theta) * Math.sin(inc)
-    ));
-  }
-  const geo = new THREE.BufferGeometry().setFromPoints(points);
-  const mat = new THREE.LineBasicMaterial({ color: 0x334466, transparent: true, opacity: 0.35 });
-  return new THREE.Line(geo, mat);
 }
 
 // ── Animate ──────────────────────────────────────────────────────────────
