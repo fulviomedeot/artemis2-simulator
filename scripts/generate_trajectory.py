@@ -289,12 +289,29 @@ def compute_anchors(moon_table, mission_start):
         return (r*dx, r*dy, r*dz)
 
     # ── Return cubic Bézier: flyby-exit → re-entry ─────────────────────────
-    # S_return uses Moon position AT T_RETURN (so boundary is C0-continuous)
+    # S_return uses Moon position AT T_RETURN (C0 continuity guaranteed)
     mxr, myr, mzr = moon_at(T_RETURN)
     fvec_exit = flyby_vec(1.0)
     S_return = (mxr + fvec_exit[0], myr + fvec_exit[1], mzr + fvec_exit[2])
 
-    exit_vel = vneg(e_moon)    # spacecraft exits moving toward Earth
+    # True exit velocity in Earth frame = Moon orbital velocity + arc tangential velocity.
+    # During flyby, pos(t) = Moon(t) + flyby_vec(frac(t)), so:
+    #   v_earth = dMoon/dt + d(flyby_vec)/dfrac * (1/flyby_duration)
+    # Using exit_vel = vneg(e_moon) ignores Moon's ~1 km/s orbital contribution
+    # and produces a 34° direction kink + 3.7× speed drop at the boundary.
+    _dt_vel = 60.0
+    _mprev = moon_at(T_RETURN - _dt_vel)
+    _moon_vel = ((mxr - _mprev[0]) / _dt_vel,
+                 (myr - _mprev[1]) / _dt_vel,
+                 (mzr - _mprev[2]) / _dt_vel)
+    _eps = 1e-5
+    _fv0 = flyby_vec(1.0 - _eps)
+    _fv1 = flyby_vec(1.0)
+    _flyby_dur = float(T_RETURN - T_PERILUNE)
+    _arc_vel = tuple((_fv1[k] - _fv0[k]) / (_eps * _flyby_dur) for k in range(3))
+    _exit_vel_vec = vadd(_moon_vel, _arc_vel)
+    _exit_speed   = math.sqrt(sum(v**2 for v in _exit_vel_vec))  # km/s
+    exit_vel = vn(_exit_vel_vec)
 
     re_lat, re_lon = deg2rad(-28.0), deg2rad(-150.0)
     r_rei = EARTH_RADIUS_KM + 120.0
@@ -303,9 +320,14 @@ def compute_anchors(moon_table, mission_start):
         r_rei * math.cos(re_lat) * math.sin(re_lon),
         r_rei * math.sin(re_lat),
     )
+    # C1_ret distance chosen so Bézier starting speed matches flyby exit speed:
+    #   speed = 3 * |C1_ret - S_return| / (T_REENTRY - T_RETURN)
+    _return_dur = float(T_REENTRY - T_RETURN)
+    _c1_dist = _exit_speed * _return_dur / 3.0
+    C1_ret = vadd(S_return, vscale(exit_vel, _c1_dist))
+    # C2_ret: control point outward from reentry so spacecraft arrives moving inward
     d_ret  = vdist(S_return, P_reentry)
-    C1_ret = vadd(S_return,   vscale(exit_vel,              d_ret * 0.28))
-    C2_ret = vadd(P_reentry,  vscale(vn(vneg(P_reentry)),   d_ret * 0.16))
+    C2_ret = vadd(P_reentry, vscale(vn(P_reentry), d_ret * 0.16))
 
     return {
         "e_moon":       e_moon,
